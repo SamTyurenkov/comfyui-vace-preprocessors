@@ -6,7 +6,7 @@ license = {file = "LICENSE"}
 dependencies = ["Pillow", "openai", "numpy", "torchvision", "dotenv"]
 
 [project.urls]
-Repository = "https://github.com/SamTyurenkov/comfyui_vace_preprocessors"
+Repository = "https://github.com/SamTyurenkov/comfyui-vace-preprocessors"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
