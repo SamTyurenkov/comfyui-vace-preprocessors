@@ -1,0 +1,15 @@
+[project]
+name = "comfyui_vace_preprocessors"
+description = "Some nodes to create a preprocessed videos"
+version = "1.0.0"
+license = {file = "LICENSE"}
+dependencies = ["Pillow", "openai", "numpy", "torchvision", "dotenv"]
+
+[project.urls]
+Repository = "https://github.com/SamTyurenkov/comfyui_vace_preprocessors"
+#  Used by Comfy Registry https://comfyregistry.org
+
+[tool.comfy]
+PublisherId = "samtyurenkov"
+DisplayName = "comfyui_vace_preprocessors"
+Icon = ""
