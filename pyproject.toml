@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_vace_preprocessors"
 description = "Some nodes to create a preprocessed videos"
-version = "1.0.1"
+version = "1.0.2"
 license = {file = "LICENSE"}
 dependencies = ["easydict", "groundingdino-py", "sam2", "decord"]
 

@@ -2,6 +2,10 @@ import base64
 import os
 from io import BytesIO
 from PIL import Image
+from pathlib import Path
+import cv2
+import tempfile
+import shutil
 import numpy
 import copy
 import folder_paths
@@ -17,8 +21,8 @@ class VideoLayoutTrackAnnotatorNode:
         MASKAUG_MODES = ["original", "original_expand", "hull", "hull_expand", "bbox", "bbox_expand"]
         return {
             "required": {
-                #"image": ("IMAGE", ),
-                "video_path": ("STRING", {"placeholder": "X://path/to/images", "vhs_path_extensions": []}),
+                "images": ("IMAGE", ),
+                # "video_path": ("STRING", {"placeholder": "X://path/to/images"}),
                 "mode": (MODES, {"default":"bboxtrack"}),
                 "mask_aug": (MASKAUG_MODES, {"default":"bbox"}),
                 "mask_aug_ratio": ("FLOAT", {"default": 0.1,"min": 0.0, "max": 1.0, "step": 0.1}),
@@ -30,20 +34,55 @@ class VideoLayoutTrackAnnotatorNode:
     RETURN_TYPES = ("IMAGE", )
     FUNCTION = "preprocess"
 
-    def preprocess(self, video_path, mode, mask_aug, mask_aug_ratio, bboxes):
+    def tensor_to_jpeg_folder(self, tensor):
         """
-        Preprocess the input image based on the selected mode and mask augmentation settings.
+        tensor: torch.Tensor, shape (B, H, W, C), float32 in [0,1]
+        returns: str  – absolute path of a *folder* that contains 00000.jpg …
+        """
+        # 1) pick / create the folder
+        base_temp = Path(folder_paths.get_temp_directory())
+        base_temp.mkdir(parents=True, exist_ok=True)          # ensure it exists
+        tmp_dir = base_temp / f"comfy_vlayout_{os.getpid()}_{id(tensor):x}"
+
+        # 2) wipe & recreate
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        # 3) dump frames
+        tensor_np = (tensor.cpu().numpy() * 255).clip(0, 255).astype(numpy.uint8)
+        for idx, frame in enumerate(tensor_np):
+            cv2.imwrite(str(tmp_dir / f"{idx:05d}.jpg"),
+                        cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+        return str(tmp_dir)
+
+    def preprocess(self, images, mode, mask_aug, mask_aug_ratio, bboxes):
+        """
+        Preprocess the input images based on the selected mode and mask augmentation settings.
         """
 
-        # Handle different modes
+        #try:
+            # Handle different modes
         if mode == "bboxtrack":
-            processed_frames = self.handle_bboxtrack(video_path, mask_aug, mask_aug_ratio, bboxes)
+            # processed_frames = self.handle_bboxtrack(video_path, mask_aug, mask_aug_ratio, bboxes)
+            jpeg_folder = self.tensor_to_jpeg_folder(images)
+
+            # 1. make sure the folder really exists
+            print("DEBUG: temp jpeg folder =", jpeg_folder, os.path.isdir(jpeg_folder))
+            # 2. list the files that will be read
+            jpgs = sorted(Path(jpeg_folder).glob("*.jpg"))
+            print("DEBUG: found", len(jpgs), "frames:", jpgs[:3])
+            processed_frames = self.handle_bboxtrack(jpeg_folder, mask_aug, mask_aug_ratio, bboxes)
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
+        #finally:
+            # clean-up (ComfyUI temp folder is wiped on restart anyway)
+            # shutil.rmtree(jpeg_folder, ignore_errors=True)
+        
         return (processed_frames,)
 
-    def handle_bboxtrack(self, video_path, mask_aug, mask_aug_ratio, bboxes):
+    def handle_bboxtrack(self, jpeg_folder, mask_aug, mask_aug_ratio, bboxes):
         """
         Handle bboxtrack mode logic.
         """
@@ -55,23 +94,18 @@ class VideoLayoutTrackAnnotatorNode:
         # Placeholder for bboxtrack-specific logic
         print("Processing in bboxtrack mode with mask augmentation:", mask_aug, "and ratio:", mask_aug_ratio)
 
-        fps = None
         input_data = copy.deepcopy(input_params)
         if 'video' in input_params:
-            assert video_path is not None, "Please set video or check configs"
-            frames, fps, width, height, num_frames = read_video_frames(video_path.split(",")[0], use_type='cv2',  info=True)
-            assert frames is not None, "Video read error"
-            input_data['frames'] = frames
-            input_data['video'] = video_path
-        if 'frames' in input_params:
-            assert video_path is not None, "Please set video or check configs"
-            frames, fps, width, height, num_frames = read_video_frames(video_path.split(",")[0], use_type='cv2', info=True)
+            assert jpeg_folder is not None, "Please set video or check configs"
+            input_data['video'] = jpeg_folder
+            frames, width, height, num_frames = read_video_frames(jpeg_folder, use_type='cv2',  info=True)
             assert frames is not None, "Video read error"
             input_data['frames'] = frames
         if 'bbox' in input_params:
             # assert bbox is not None, "Please set bbox"
             if bboxes is not None:
                 input_data['bbox'] = bboxes[0] if len(bboxes) == 1 else bboxes
+                
         if 'mode' in input_params:
             input_data['mode'] = "bboxtrack"
         if 'mask_cfg' in input_params:
@@ -83,7 +117,6 @@ class VideoLayoutTrackAnnotatorNode:
                     input_data['mask_cfg'] = {"mode": mask_aug}
 
         # output data
-        save_fps = fps if fps is not None else save_fps
         pre_save_dir = folder_paths.get_temp_directory()
         if not os.path.exists(pre_save_dir):
             os.makedirs(pre_save_dir)
@@ -94,28 +127,30 @@ class VideoLayoutTrackAnnotatorNode:
         results = annotator_instance.forward(**input_data)
 
         frames =  results['frames'] if isinstance(results, dict) else results
-        # Ensure we have a list of individual frames
-        if isinstance(frames, numpy.ndarray) and frames.ndim == 4:          # (B, H, W, C)
-            frames = [frames[i] for i in range(frames.shape[0])]
+        print("DEBUG: annotator returned list with len =", len(frames))
 
-        # Convert every frame to float32 in [0, 1] and make it a CUDA tensor
-        frames_out = []
-        for f in frames:
-            if isinstance(f, numpy.ndarray):
-                f = torch.from_numpy(f).float()
-                if f.device.type == 'cpu':               # not yet on GPU
-                    f = f.to(torch.device('cuda', int(os.getenv("RANK", 0))))
-                if f.max() > 1.0:                        # scale 0-255 → 0-1
-                    f = f / 255.0
-            frames_out.append(f)
-
-        # Stack them into one 4-D tensor: (B, H, W, C)
-        frames_tensor = torch.stack(frames_out, dim=0)
-
-        if frames_tensor is not None:
-            return frames_tensor
+        # turn any recognised container into a list of HWC numpy arrays
+        if isinstance(frames, numpy.ndarray):
+            if frames.ndim == 4:          # (B,H,W,C)
+                frames = [frames[i] for i in range(frames.shape[0])]
+            elif frames.ndim == 3:        # single image
+                frames = [frames]
+        elif isinstance(frames, torch.Tensor):
+            frames = [f.cpu().numpy() for f in frames.unbind(0)]
+        elif isinstance(frames, (list, tuple)):
+            frames = [numpy.asarray(f) for f in frames]
         else:
-            raise RuntimeError("Annotator did not return any processed frames.")
+            raise RuntimeError(f"Unexpected type from annotator: {type(frames)}")
+
+        if not frames:
+            raise RuntimeError("Annotator returned zero frames.")
+
+        # ---------- float32 tensor in [0,1] ----------
+        frames_tensor = torch.stack([
+            torch.from_numpy(f).float().to(torch.device('cuda', int(os.getenv("RANK", 0)))) / 255.
+            for f in frames
+        ])
+        return frames_tensor
     
     def parse_bboxes(self, bbox_str):
         """

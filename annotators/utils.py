@@ -8,6 +8,7 @@ import torch
 import numpy as np
 import cv2
 import imageio
+from pathlib import Path
 from PIL import Image
 import pycocotools.mask as mask_utils
 
@@ -199,27 +200,42 @@ def read_video_frames(video_path, use_type='cv2', is_rgb=True, info=False):
             return None
     elif use_type == "cv2":
         try:
-            cap = cv2.VideoCapture(video_path)
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if is_rgb:
-                    frames.append(frame[..., ::-1])
-                else:
-                    frames.append(frame)
-            cap.release()
-            total_frames = len(frames)
+            if os.path.isdir(str(video_path)):
+                # --- folder of JPEGs ---
+                jpg_paths = sorted(Path(video_path).glob("*.jpg"))
+                if not jpg_paths:
+                    return None
+                frames = []
+                for p in jpg_paths:
+                    img = cv2.imread(str(p))
+                    if img is None:
+                        return None
+                    frames.append(img[..., ::-1] if is_rgb else img)
+                height, width = frames[0].shape[:2]
+                fps = 25.0        # dummy
+                total_frames = len(frames)
+            else:
+                cap = cv2.VideoCapture(video_path)
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    if is_rgb:
+                        frames.append(frame[..., ::-1])
+                    else:
+                        frames.append(frame)
+                cap.release()
+                total_frames = len(frames)
         except Exception as e:
             print(f"OpenCV read error: {e}")
             return None
     else:
         raise ValueError(f"Unknown video type {use_type}")
     if info:
-        return frames, fps, width, height, total_frames
+        return frames, width, height, total_frames
     else:
         return frames
 
