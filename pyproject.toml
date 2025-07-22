@@ -1,9 +1,9 @@
 [project]
 name = "comfyui_vace_preprocessors"
 description = "Some nodes to create a preprocessed videos"
-version = "1.0.0"
+version = "1.0.1"
 license = {file = "LICENSE"}
-dependencies = ["Pillow", "openai", "numpy", "torchvision", "dotenv"]
+dependencies = ["easydict", "groundingdino-py", "sam2", "decord"]
 
 [project.urls]
 Repository = "https://github.com/SamTyurenkov/comfyui-vace-preprocessors"
