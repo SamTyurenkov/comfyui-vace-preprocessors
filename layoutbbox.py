@@ -163,3 +163,35 @@ class VideoLayoutTrackAnnotatorNode:
                 raise ValueError(f"The bounding box requires 4 values, but the input is {len(coords)}.")
             bboxes.append(coords)
         return bboxes
+    
+class CombineLayoutTracksNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images_a": ("IMAGE", ),
+                "images_b": ("IMAGE", ),
+            },
+        }
+    RETURN_TYPES = ("IMAGE", )
+    FUNCTION = "combine"
+
+    def combine(self, images_a, images_b):
+        # Convert to CPU/NumPy and iterate
+        a_np = images_a.cpu().numpy()      # (B, H, W, C) float32 [0,1]
+        b_np = images_b.cpu().numpy()
+
+        combined_np = []
+        for f1, f2 in zip(a_np, b_np):
+            # scale back to 0-255 for the mask check
+            f1_u8 = (f1 * 255).astype(numpy.uint8)
+            f2_u8 = (f2 * 255).astype(numpy.uint8)
+
+            mask = (f2_u8 != 255).any(axis=-1, keepdims=True)
+            out_u8 = numpy.where(mask, f2_u8, f1_u8)
+
+            combined_np.append(out_u8.astype(numpy.float32) / 255.0)
+
+        # back to torch tensor on the same device
+        combined = torch.from_numpy(numpy.stack(combined_np)).to(images_a.device)
+        return (combined,)
